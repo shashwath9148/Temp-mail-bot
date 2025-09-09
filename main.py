@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 # -----------------------------
 # CONFIG
 # -----------------------------
-BOT_TOKEN = "8462384824:AAHFrrNnBP7TGUGo7ILaMksoI9qBU0xSq64"  # Your bot token
+BOT_TOKEN = "8245435693:AAHtqJCSCphtU5mGkosOQ7XgD_eSIsP3HyQ"  # Your bot token
 WEBHOOK_URL = "https://temp-mail-bot-1aqf.onrender.com"        # Your Render app URL
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode="MarkdownV2")
 
