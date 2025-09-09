@@ -6,7 +6,7 @@ import string
 # -----------------------------
 # CONFIG
 # -----------------------------
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # Replace with your Telegram bot token
+BOT_TOKEN = "8462384824:AAGoxgEV4q0ZE7A9250riCxo1eqXYKA3DbA"  # Replace with your Telegram bot token
 bot = telebot.TeleBot(BOT_TOKEN)
 
 API_1SECMAIL = "https://www.1secmail.com/api/v1/"
