@@ -1,114 +1,407 @@
-import os
 import telebot
 import requests
 import random
 import string
+from telebot import types
+from flask import Flask, request
+import os
+import time
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-BOT_TOKEN = os.getenv("TELEGRAM_TOKEN") or "8462384824:AAEfU5ENC6VZCTnL7t26yBGDv09UZqt1CdE"
+BOT_TOKEN = os.environ.get("BOT_TOKEN")  # Set in Render Environment Variables
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # e.g., https://temp-mail-bot-1aqf.onrender.com
 bot = telebot.TeleBot(BOT_TOKEN)
 
-APIS = {
-    "1secmail": "https://www.1secmail.com/api/v1/",
-    "mailtm": "https://api.mail.tm",
-    "guerrilla": "https://api.guerrillamail.com/ajax.php",
-    "moakt": "https://api.moakt.com",
-    "tempmaildev": "https://api.tempmail.lol"
-}
+API_1SECMAIL = "https://www.1secmail.com/api/v1/"
+
+OWNER_LINK = "https://t.me/shashu9148"
+BRAND = "🛡️ *Created & Secured by S H Λ S H U*"
+
+# Store last 5 emails per user
+user_emails = {}
 
 # -----------------------------
-# EMAIL FUNCTIONS
+# EMAIL GENERATOR
 # -----------------------------
 def generate_random_email():
-    """Try multiple APIs until one works"""
-    # 1secmail
     try:
-        r = requests.get(f"{APIS['1secmail']}?action=genRandomMailbox&count=1", timeout=5).json()
-        if r and isinstance(r, list):
-            return r[0]
+        resp = requests.get(f"{API_1SECMAIL}?action=genRandomMailbox&count=1", timeout=5).json()
+        if resp and isinstance(resp, list):
+            return resp[0]
     except:
         pass
+    local = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    return f"{local}@1secmail.com"
 
-    # mail.tm
+# -----------------------------
+# FETCH EMAILS
+# -----------------------------
+def fetch_messages(email):
     try:
-        domains = requests.get(f"{APIS['mailtm']}/domains", timeout=5).json().get("hydra:member", [])
-        if domains:
-            local = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-            return f"{local}@{random.choice(domains)['domain']}"
+        login, domain = email.split("@")
+        resp = requests.get(f"{API_1SECMAIL}?action=getMessages&login={login}&domain={domain}", timeout=5).json()
+        return resp if isinstance(resp, list) else []
     except:
-        pass
+        return []
 
-    # GuerrillaMail
+def fetch_message_content(email, message_id):
     try:
-        r = requests.get(f"{APIS['guerrilla']}?f=get_email_address", timeout=5).json()
-        if "email_addr" in r:
-            return r["email_addr"]
+        login, domain = email.split("@")
+        resp = requests.get(f"{API_1SECMAIL}?action=readMessage&login={login}&domain={domain}&id={message_id}", timeout=5).json()
+        return resp
     except:
-        pass
+        return None
 
-    # Moakt
-    try:
-        r = requests.get(f"{APIS['moakt']}/inbox", timeout=5).json()
-        if "email" in r:
-            return r["email"]
-    except:
-        pass
+# -----------------------------
+# TELEGRAM HANDLERS
+# -----------------------------
+@bot.message_handler(commands=["start"])
+def start(message):
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("📧 Generate Email", callback_data="gen_email"),
+        types.InlineKeyboardButton("📥 Inbox", callback_data="inbox"),
+        types.InlineKeyboardButton("ℹ️ Help", callback_data="help"),
+        types.InlineKeyboardButton("👑 Owner", url=OWNER_LINK)
+    )
 
-    # TempMail.dev
-    try:
-        r = requests.get(f"{APIS['tempmaildev']}/generate", timeout=5).json()
-        if "address" in r:
-            return r["address"]
-    except:
-        pass
+    welcome_text = (
+        "👋 *Hello, Explorer!*\n\n"
+        "Welcome to **Temp Mail Bot Premium** – your ultimate shield against spam!\n\n"
+        "🛡️ Generate disposable emails instantly.\n"
+        "⚡ Stay safe, private, and hassle-free.\n\n"
+        f"{BRAND}"
+    )
 
-    return None
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup, parse_mode="MarkdownV2")
 
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    chat_id = call.message.chat.id
 
-def get_inbox(email):
-    """Fetch inbox messages from available APIs"""
-    login, domain = email.split("@")
+    # ----------------- Generate / Refresh Email -----------------
+    if call.data == "gen_email":
+        email = generate_random_email()
+        if not email:
+            bot.answer_callback_query(call.id, "❌ Failed to generate email!")
+            return
 
-    # 1secmail
-    try:
-        resp = requests.get(f"{APIS['1secmail']}?action=getMessages&login={login}&domain={domain}", timeout=5).json()
-        if isinstance(resp, list):
-            return resp
-    except:
-        pass
+        # Save last emails per user
+        if chat_id not in user_emails:
+            user_emails[chat_id] = []
+        user_emails[chat_id].append(email)
+        if len(user_emails[chat_id]) > 5:
+            user_emails[chat_id].pop(0)
 
-    # mail.tm
-    try:
-        payload = {"address": email, "password": "TempPass123!"}
-        requests.post(f"{APIS['mailtm']}/accounts", json=payload)
-        token_resp = requests.post(f"{APIS['mailtm']}/token", json=payload).json()
-        token = token_resp.get("token")
-        if token:
-            headers = {"Authorization": f"Bearer {token}"}
-            inbox_resp = requests.get(f"{APIS['mailtm']}/messages", headers=headers).json()
-            return inbox_resp.get("hydra:member", [])
-    except:
-        pass
+        bot.answer_callback_query(call.id, "✅ Email generated!")
 
-    # GuerrillaMail (sid_token)
-    try:
-        r = requests.get(f"{APIS['guerrilla']}?f=get_email_address", timeout=5).json()
-        sid = r.get("sid_token")
-        if sid:
-            inbox = requests.get(f"{APIS['guerrilla']}?f=get_mail_list&sid_token={sid}", timeout=5).json()
-            return inbox.get("list", [])
-    except:
-        pass
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("📧 New Email", callback_data="gen_email"),
+            types.InlineKeyboardButton("📋 Copy Email", callback_data=f"copy_{email}"),
+            types.InlineKeyboardButton("📥 Inbox", callback_data="inbox")
+        )
 
-    return []
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text=f"📬 *Your Temporary Email:*\n`{email}`\n\n✨ Tap buttons below to copy, refresh, or open inbox.\n\n{BRAND}",
+            reply_markup=markup,
+            parse_mode="MarkdownV2"
+        )
 
+    # ----------------- Copy Email -----------------
+    elif call.data.startswith("copy_"):
+        email = call.data.replace("copy_", "")
+        bot.answer_callback_query(call.id, text=f"📋 Email copied:\n{email}", show_alert=True)
 
-def read_email(email, mail_id):
-    """Read a specific email by ID"""
-    login, domain = email.split("@")
+    # ----------------- Inbox -----------------
+    elif call.data == "inbox":
+        bot.answer_callback_query(call.id)
+        emails = user_emails.get(chat_id, [])
+        if not emails:
+            bot.send_message(chat_id, "📭 You have no generated emails yet. Tap *Generate Email* first.\n\n" + BRAND, parse_mode="MarkdownV2")
+            return
 
+        markup = types.InlineKeyboardMarkup()
+        for email in emails:
+            markup.add(types.InlineKeyboardButton(email, callback_data=f"view_{email}"))
+        bot.send_message(chat_id, "📭 *Your Email Inbox:* Tap an email to view messages.\n\n" + BRAND, reply_markup=markup, parse_mode="MarkdownV2")
+
+    # ----------------- View Email -----------------
+    elif call.data.startswith("view_"):
+        email = call.data.replace("view_", "")
+        bot.answer_callback_query(call.id)
+        messages = fetch_messages(email)
+        if not messages:
+            bot.send_message(chat_id, f"📪 *No messages found* for `{email}` yet.\n\n{BRAND}", parse_mode="MarkdownV2")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for msg in messages[-5:][::-1]:
+            msg_preview = msg['from'][:20] + ("..." if len(msg['from'])>20 else "")
+            markup.add(types.InlineKeyboardButton(f"📩 {msg_preview}", callback_data=f"read_{email}_{msg['id']}"))
+
+        bot.send_message(chat_id, f"📬 *Messages for:* `{email}`\n\nTap to read:", reply_markup=markup, parse_mode="MarkdownV2")
+
+    # ----------------- Read Message -----------------
+    elif call.data.startswith("read_"):
+        parts = call.data.split("_")
+        email = parts[1]
+        msg_id = parts[2]
+        content = fetch_message_content(email, msg_id)
+        if not content:
+            bot.send_message(chat_id, f"❌ Failed to fetch message content for `{email}`.", parse_mode="MarkdownV2")
+            return
+
+        text = f"📧 *From:* {content.get('from','Unknown')}\n"
+        text += f"📝 *Subject:* {content.get('subject','No Subject')}\n"
+        text += f"📅 *Date:* {content.get('date','Unknown')}\n\n"
+        text += f"{content.get('textBody','[No Body]')}\n\n{BRAND}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("⬅️ Back to Inbox", callback_data="inbox"))
+
+        bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=markup)
+
+    # ----------------- Help -----------------
+    elif call.data == "help":
+        bot.answer_callback_query(call.id)
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("📧 Generate Email", callback_data="gen_email"),
+            types.InlineKeyboardButton("👑 Owner", url=OWNER_LINK)
+        )
+        help_text = (
+            "ℹ️ *Help Menu*\n\n"
+            "📧 *Generate Email* → Create a new temporary email instantly.\n"
+            "📥 *Inbox* → View emails you’ve generated.\n"
+            "📩 Tap a message → Read full content inline.\n"
+            "📋 *Copy Email* → Copy to clipboard.\n"
+            "👑 *Owner* → Contact the creator for support."
+        )
+        bot.send_message(chat_id, f"{help_text}\n\n{BRAND}", reply_markup=markup, parse_mode="MarkdownV2")
+
+# -----------------------------
+# FLASK WEBHOOK SERVER
+# -----------------------------
+app = Flask(__name__)
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return "🚀 Temp Mail Bot Premium is running!", 200
+
+# -----------------------------
+# AUTO-SET WEBHOOK
+# -----------------------------
+bot.remove_webhook()
+bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+# -----------------------------
+# RUN FLASK
+# -----------------------------
+if __name__ == "__main__":
+    print("🚀 Starting Temp Mail Bot Premium...")
+    time.sleep(2)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))        for email in emails:
+            markup.add(types.InlineKeyboardButton(email, callback_data=f"view_{email}"))
+        bot.send_message(chat_id, "📭 *Your Email Inbox:* Tap an email to view messages.\n\n" + BRAND, reply_markup=markup, parse_mode="MarkdownV2")
+
+    # ----------------- View Email -----------------
+    elif call.data.startswith("view_"):
+        email = call.data.replace("view_", "")
+        bot.answer_callback_query(call.id)
+        messages = fetch_messages(email)
+        if not messages:
+            bot.send_message(chat_id, f"📪 *No messages found* for `{email}` yet.\n\n{BRAND}", parse_mode="MarkdownV2")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for msg in messages[-5:][::-1]:
+            msg_preview = msg['from'][:20] + ("..." if len(msg['from'])>20 else "")
+            markup.add(types.InlineKeyboardButton(f"📩 {msg_preview}", callback_data=f"read_{email}_{msg['id']}"))
+
+        bot.send_message(chat_id, f"📬 *Messages for:* `{email}`\n\nTap to read:", reply_markup=markup, parse_mode="MarkdownV2")
+
+    # ----------------- Read Message -----------------
+    elif call.data.startswith("read_"):
+        parts = call.data.split("_")
+        email = parts[1]
+        msg_id = parts[2]
+        content = fetch_message_content(email, msg_id)
+        if not content:
+            bot.send_message(chat_id, f"❌ Failed to fetch message content for `{email}`.", parse_mode="MarkdownV2")
+            return
+
+        text = f"📧 *From:* {content.get('from','Unknown')}\n"
+        text += f"📝 *Subject:* {content.get('subject','No Subject')}\n"
+        text += f"📅 *Date:* {content.get('date','Unknown')}\n\n"
+        text += f"{content.get('textBody','[No Body]')}\n\n{BRAND}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("⬅️ Back to Inbox", callback_data="inbox"))
+
+        bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=markup)
+
+    # ----------------- Help -----------------
+    elif call.data == "help":
+        bot.answer_callback_query(call.id)
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("📧 Generate Email", callback_data="gen_email"),
+            types.InlineKeyboardButton("👑 Owner", url=OWNER_LINK)
+        )
+        help_text = (
+            "ℹ️ *Help Menu*\n\n"
+            "📧 *Generate Email* → Create a new temporary email instantly.\n"
+            "📥 *Inbox* → View emails you’ve generated.\n"
+            "📩 Tap a message → Read full content inline.\n"
+            "📋 *Copy Email* → Copy to clipboard.\n"
+            "👑 *Owner* → Contact the creator for support."
+        )
+        bot.send_message(chat_id, f"{help_text}\n\n{BRAND}", reply_markup=markup, parse_mode="MarkdownV2")
+
+# -----------------------------
+# FLASK WEBHOOK SERVER
+# -----------------------------
+app = Flask(__name__)
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return "🚀 Temp Mail Bot Premium is running!", 200
+
+# -----------------------------
+# AUTO-SET WEBHOOK
+# -----------------------------
+bot.remove_webhook()
+bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+# -----------------------------
+# RUN FLASK
+# -----------------------------
+if __name__ == "__main__":
+    print("🚀 Starting Temp Mail Bot Premium...")
+    time.sleep(2)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))            parse_mode="MarkdownV2"
+        )
+
+    # ----------------- Copy Email -----------------
+    elif call.data.startswith("copy_"):
+        email = call.data.replace("copy_", "")
+        bot.answer_callback_query(call.id, text=f"📋 Email copied:\n{email}", show_alert=True)
+
+    # ----------------- Inbox -----------------
+    elif call.data == "inbox":
+        bot.answer_callback_query(call.id)
+        emails = user_emails.get(chat_id, [])
+        if not emails:
+            bot.send_message(chat_id, "📭 You have no generated emails yet. Tap *Generate Email* first.\n\n" + BRAND, parse_mode="MarkdownV2")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for email in emails:
+            markup.add(types.InlineKeyboardButton(email, callback_data=f"view_{email}"))
+        bot.send_message(chat_id, "📭 *Your Email Inbox:* Tap an email to view messages.\n\n" + BRAND, reply_markup=markup, parse_mode="MarkdownV2")
+
+    # ----------------- View Email -----------------
+    elif call.data.startswith("view_"):
+        email = call.data.replace("view_", "")
+        bot.answer_callback_query(call.id)
+        messages = fetch_messages(email)
+        if not messages:
+            bot.send_message(chat_id, f"📪 *No messages found* for `{email}` yet.\n\n{BRAND}", parse_mode="MarkdownV2")
+            return
+
+        markup = types.InlineKeyboardMarkup()
+        for msg in messages[-5:][::-1]:
+            msg_preview = msg['from'][:20] + ("..." if len(msg['from'])>20 else "")
+            markup.add(types.InlineKeyboardButton(f"📩 {msg_preview}", callback_data=f"read_{email}_{msg['id']}"))
+
+        bot.send_message(chat_id, f"📬 *Messages for:* `{email}`\n\nTap to read:", reply_markup=markup, parse_mode="MarkdownV2")
+
+    # ----------------- Read Message -----------------
+    elif call.data.startswith("read_"):
+        parts = call.data.split("_")
+        email = parts[1]
+        msg_id = parts[2]
+        content = fetch_message_content(email, msg_id)
+        if not content:
+            bot.send_message(chat_id, f"❌ Failed to fetch message content for `{email}`.", parse_mode="MarkdownV2")
+            return
+
+        text = f"📧 *From:* {content.get('from','Unknown')}\n"
+        text += f"📝 *Subject:* {content.get('subject','No Subject')}\n"
+        text += f"📅 *Date:* {content.get('date','Unknown')}\n\n"
+        text += f"{content.get('textBody','[No Body]')}\n\n{BRAND}"
+
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton("⬅️ Back to Inbox", callback_data="inbox"))
+
+        bot.send_message(chat_id, text, parse_mode="MarkdownV2", reply_markup=markup)
+
+    # ----------------- Help -----------------
+    elif call.data == "help":
+        bot.answer_callback_query(call.id)
+        markup = types.InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            types.InlineKeyboardButton("📧 Generate Email", callback_data="gen_email"),
+            types.InlineKeyboardButton("👑 Owner", url=OWNER_LINK)
+        )
+        help_text = (
+            "ℹ️ *Help Menu*\n\n"
+            "📧 *Generate Email* → Create a new temporary email instantly.\n"
+            "📥 *Inbox* → View emails you’ve generated.\n"
+            "📩 Tap a message → Read full content inline.\n"
+            "📋 *Copy Email* → Copy to clipboard.\n"
+            "👑 *Owner* → Contact the creator for support."
+        )
+        bot.send_message(chat_id, f"{help_text}\n\n{BRAND}", reply_markup=markup, parse_mode="MarkdownV2")
+
+# -----------------------------
+# FLASK WEBHOOK SERVER
+# -----------------------------
+app = Flask(__name__)
+
+@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+def webhook():
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "!", 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return "🚀 Temp Mail Bot Premium is running!", 200
+
+# -----------------------------
+# AUTO-SET WEBHOOK
+# -----------------------------
+bot.remove_webhook()
+bot.set_webhook(url=f"{WEBHOOK_URL}/{BOT_TOKEN}")
+
+# -----------------------------
+# RUN FLASK
+# -----------------------------
+if __name__ == "__main__":
+    print("🚀 Starting Temp Mail Bot Premium...")
+    time.sleep(2)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
     # 1secmail
     try:
         resp = requests.get(
